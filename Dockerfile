@@ -10,10 +10,7 @@ RUN apt-get update && \
 
 COPY builder/requirements.txt /builder/requirements.txt
 RUN pip install --upgrade pip && \
-    pip install --no-cache-dir -r /builder/requirements.txt && \
-    pip install --no-cache-dir huggingface_hub
-
-RUN python -c "from pathlib import Path; import whisperx; p = Path(whisperx.__file__).parent / 'assets' / 'pytorch_model.bin'; print(f'VAD model bundled: {p.exists()}')"
+    pip install --no-cache-dir -r /builder/requirements.txt
 
 COPY builder/fetch_models.py /builder/fetch_models.py
 RUN python /builder/fetch_models.py
