@@ -1,11 +1,32 @@
 """RunPod serverless handler for WhisperX transcription + alignment."""
-import runpod
-import whisperx
 import torch
 import gc
 import os
 import tempfile
 import requests
+
+_original_torch_load = torch.load
+def _patched_torch_load(*args, **kwargs):
+    if 'weights_only' not in kwargs:
+        kwargs['weights_only'] = False
+    return _original_torch_load(*args, **kwargs)
+torch.load = _patched_torch_load
+
+import whisperx.vad as _vad
+import urllib.request as _urllib_req
+
+_original_urlopen = _urllib_req.urlopen
+def _patched_urlopen(url, *args, **kwargs):
+    if isinstance(url, str) and url.startswith("http"):
+        import io
+        resp = requests.get(url, allow_redirects=True, timeout=120)
+        resp.raise_for_status()
+        return io.BytesIO(resp.content)
+    return _original_urlopen(url, *args, **kwargs)
+_urllib_req.urlopen = _patched_urlopen
+
+import runpod
+import whisperx
 
 MODEL = None
 MODEL_DIR = "/models"
