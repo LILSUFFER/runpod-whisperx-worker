@@ -1,10 +1,10 @@
-FROM runpod/pytorch:3.10-2.0.0-117
+FROM runpod/pytorch:2.4.0-py3.11-cuda12.4.1-devel-ubuntu22.04
 
 SHELL ["/bin/bash", "-c"]
 WORKDIR /
 
 RUN apt-get update && \
-    apt-get install -y ffmpeg libavformat-dev libavcodec-dev libavdevice-dev libavutil-dev libswscale-dev libswresample-dev libavfilter-dev pkg-config && \
+    apt-get install -y ffmpeg && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
