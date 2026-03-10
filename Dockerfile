@@ -1,18 +1,24 @@
-FROM realyashnag/worker-whisperx:latest
+FROM runpod/pytorch:2.4.0-py3.11-cuda12.4.1-devel-ubuntu22.04
 
-RUN python -c "\
-import requests, os, torch, hashlib; \
-model_dir = torch.hub._get_torch_home(); \
-os.makedirs(model_dir, exist_ok=True); \
-model_fp = os.path.join(model_dir, 'whisperx-vad-segmentation.bin'); \
-r = requests.get('https://whisperx.s3.eu-west-2.amazonaws.com/model_weights/segmentation/0b5b3216d60a2d32fc086b47ea8c67589aaeb26b7e07fcbe620d6d0b83e209ea/pytorch_model.bin', allow_redirects=True, timeout=300); \
-r.raise_for_status(); \
-open(model_fp, 'wb').write(r.content); \
-h = hashlib.sha256(r.content).hexdigest(); \
-print(f'VAD model: {len(r.content)} bytes, SHA256: {h}'); \
-print(f'Expected:  0b5b3216d60a2d32fc086b47ea8c67589aaeb26b7e07fcbe620d6d0b83e209ea'); \
-print(f'Match: {h == \"0b5b3216d60a2d32fc086b47ea8c67589aaeb26b7e07fcbe620d6d0b83e209ea\"}')"
+SHELL ["/bin/bash", "-c"]
+WORKDIR /
 
-RUN VADPY=$(python -c "import whisperx.vad, inspect; print(inspect.getfile(whisperx.vad))") && \
-    sed -i 's/raise RuntimeError("Model has been downloaded but the SHA256 checksum does not not match/pass  # SHA256 check disabled  # raise RuntimeError("Model has been downloaded but the SHA256 checksum does not not match/' "$VADPY" && \
-    echo "Patched SHA256 check in $VADPY"
+RUN apt-get update && \
+    apt-get install -y ffmpeg && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/*
+
+COPY builder/requirements.txt /builder/requirements.txt
+RUN pip install --upgrade pip && \
+    pip install --no-cache-dir -r /builder/requirements.txt
+
+RUN python -c "import whisperx; print('WhisperX version:', whisperx.__version__); \
+from pathlib import Path; p = Path(whisperx.__file__).parent / 'assets' / 'pytorch_model.bin'; \
+print(f'Bundled VAD model: {p} exists={p.exists()}')"
+
+COPY builder/fetch_models.py /builder/fetch_models.py
+RUN python /builder/fetch_models.py
+
+COPY src/rp_handler.py /rp_handler.py
+
+CMD ["python", "-u", "/rp_handler.py"]
