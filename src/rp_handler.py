@@ -1,19 +1,19 @@
 """RunPod serverless handler for WhisperX transcription + alignment."""
+import sys
+print(f"[INIT] Python {sys.version}", flush=True)
+
 import torch
-import gc
-import os
-import tempfile
-import requests
+print(f"[INIT] PyTorch {torch.__version__}", flush=True)
 
 _original_torch_load = torch.load
 def _patched_torch_load(*args, **kwargs):
-    if 'weights_only' not in kwargs:
-        kwargs['weights_only'] = False
+    kwargs['weights_only'] = False
     return _original_torch_load(*args, **kwargs)
 torch.load = _patched_torch_load
+print("[INIT] Patched torch.load (weights_only=False forced)", flush=True)
 
-import whisperx.vad as _vad
 import urllib.request as _urllib_req
+import requests
 
 _original_urlopen = _urllib_req.urlopen
 def _patched_urlopen(url, *args, **kwargs):
@@ -22,11 +22,23 @@ def _patched_urlopen(url, *args, **kwargs):
         resp = requests.get(url, allow_redirects=True, timeout=120)
         resp.raise_for_status()
         return io.BytesIO(resp.content)
+    if hasattr(url, 'full_url'):
+        import io
+        resp = requests.get(url.full_url, allow_redirects=True, timeout=120)
+        resp.raise_for_status()
+        return io.BytesIO(resp.content)
     return _original_urlopen(url, *args, **kwargs)
 _urllib_req.urlopen = _patched_urlopen
+urllib.request.urlopen = _patched_urlopen
+print("[INIT] Patched urllib.request.urlopen (redirect support)", flush=True)
+
+import gc
+import os
+import tempfile
 
 import runpod
 import whisperx
+print("[INIT] WhisperX imported successfully", flush=True)
 
 MODEL = None
 MODEL_DIR = "/models"
@@ -36,14 +48,14 @@ COMPUTE_TYPE = "float16" if torch.cuda.is_available() else "int8"
 def setup():
     global MODEL
     model_name = os.environ.get("WHISPER_MODEL", "large-v2")
-    print(f"Loading WhisperX {model_name} on {DEVICE} ({COMPUTE_TYPE})...")
+    print(f"[INIT] Loading WhisperX {model_name} on {DEVICE} ({COMPUTE_TYPE})...", flush=True)
     MODEL = whisperx.load_model(
         model_name,
         device=DEVICE,
         compute_type=COMPUTE_TYPE,
         download_root=MODEL_DIR
     )
-    print("Model loaded.")
+    print("[INIT] Model loaded successfully!", flush=True)
 
 def download_audio(url):
     """Download audio from URL to temp file."""
