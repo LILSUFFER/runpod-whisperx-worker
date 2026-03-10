@@ -10,9 +10,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN pip install --no-cache-dir \
     runpod==1.7.7 \
     whisperx==3.3.1 \
-    ctranslate2>=4.5.0 \
     matplotlib \
     requests
+
+RUN pip install --no-cache-dir --force-reinstall --no-deps \
+    ctranslate2==4.5.0
 
 RUN pip install --no-cache-dir --force-reinstall --no-deps \
     torch==2.5.1 torchaudio==2.5.1 --index-url https://download.pytorch.org/whl/cu124
