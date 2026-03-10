@@ -1,19 +1,14 @@
-"""Pre-download WhisperX large-v2 model during Docker build."""
-import whisperx
+"""Pre-download faster-whisper large-v2 model during Docker build."""
 import os
 
 MODEL_DIR = "/models"
 os.makedirs(MODEL_DIR, exist_ok=True)
 
-print("Downloading WhisperX large-v2 model...")
-model = whisperx.load_model(
-    "large-v2",
-    device="cpu",
-    compute_type="int8",
-    download_root=MODEL_DIR
+print("Downloading faster-whisper large-v2 model via huggingface_hub...")
+from huggingface_hub import snapshot_download
+snapshot_download(
+    repo_id="Systran/faster-whisper-large-v2",
+    local_dir=os.path.join(MODEL_DIR, "faster-whisper-large-v2"),
+    local_dir_use_symlinks=False,
 )
-del model
-print("large-v2 model downloaded.")
-
-print("Skipping alignment model download (will be fetched on first run).")
-print("All models downloaded successfully.")
+print("Model downloaded successfully.")
