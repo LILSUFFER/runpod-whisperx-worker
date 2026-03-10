@@ -4,12 +4,12 @@ ENV DEBIAN_FRONTEND=noninteractive
 ENV PYTHONUNBUFFERED=1
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ffmpeg libsndfile1 && \
+    ffmpeg libsndfile1 git && \
     rm -rf /var/lib/apt/lists/*
 
 RUN pip install --no-cache-dir \
     runpod==1.7.7 \
-    whisperx==3.3.1 \
+    git+https://github.com/m-bain/whisperx.git \
     matplotlib \
     requests
 

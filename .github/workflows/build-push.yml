@@ -2,7 +2,7 @@ name: Build and Push Docker Image
 
 on:
   push:
-    tags: ['v*']
+    branches: [main]
   workflow_dispatch:
 
 env:
@@ -34,7 +34,7 @@ jobs:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
             type=raw,value=latest
-            type=ref,event=tag
+            type=raw,value=v9
             type=sha,prefix=
 
       - name: Build and push Docker image
