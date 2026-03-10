@@ -12,33 +12,35 @@ def _patched_torch_load(*args, **kwargs):
 torch.load = _patched_torch_load
 print("[INIT] Patched torch.load (weights_only=False forced)", flush=True)
 
-import urllib.request as _urllib_req
-import requests
-
-_original_urlopen = _urllib_req.urlopen
-def _patched_urlopen(url, *args, **kwargs):
-    if isinstance(url, str) and url.startswith("http"):
-        import io
-        resp = requests.get(url, allow_redirects=True, timeout=120)
-        resp.raise_for_status()
-        return io.BytesIO(resp.content)
-    if hasattr(url, 'full_url'):
-        import io
-        resp = requests.get(url.full_url, allow_redirects=True, timeout=120)
-        resp.raise_for_status()
-        return io.BytesIO(resp.content)
-    return _original_urlopen(url, *args, **kwargs)
-_urllib_req.urlopen = _patched_urlopen
-urllib.request.urlopen = _patched_urlopen
-print("[INIT] Patched urllib.request.urlopen (redirect support)", flush=True)
-
 import gc
 import os
+import io
 import tempfile
+from pathlib import Path
 
+import requests
 import runpod
 import whisperx
-print("[INIT] WhisperX imported successfully", flush=True)
+print(f"[INIT] WhisperX imported successfully", flush=True)
+
+WHISPERX_DIR = Path(whisperx.__file__).parent
+BUNDLED_VAD = WHISPERX_DIR / "assets" / "pytorch_model.bin"
+print(f"[INIT] Bundled VAD model path: {BUNDLED_VAD} (exists={BUNDLED_VAD.exists()})", flush=True)
+
+if not BUNDLED_VAD.exists():
+    print("[INIT] Bundled VAD not found, downloading to torch cache...", flush=True)
+    import urllib.request as _urllib_req
+    _original_urlopen = _urllib_req.urlopen
+    def _patched_urlopen(url, *args, **kwargs):
+        target = url if isinstance(url, str) else getattr(url, 'full_url', None)
+        if target and target.startswith("http"):
+            resp = requests.get(target, allow_redirects=True, timeout=300)
+            resp.raise_for_status()
+            return io.BytesIO(resp.content)
+        return _original_urlopen(url, *args, **kwargs)
+    _urllib_req.urlopen = _patched_urlopen
+    sys.modules['urllib.request'].urlopen = _patched_urlopen
+    print("[INIT] Patched urllib for redirect support", flush=True)
 
 MODEL = None
 MODEL_DIR = "/models"
@@ -49,11 +51,18 @@ def setup():
     global MODEL
     model_name = os.environ.get("WHISPER_MODEL", "large-v2")
     print(f"[INIT] Loading WhisperX {model_name} on {DEVICE} ({COMPUTE_TYPE})...", flush=True)
+
+    vad_options = {}
+    if BUNDLED_VAD.exists():
+        vad_options["model_fp"] = str(BUNDLED_VAD)
+        print(f"[INIT] Using bundled VAD model: {BUNDLED_VAD}", flush=True)
+
     MODEL = whisperx.load_model(
         model_name,
         device=DEVICE,
         compute_type=COMPUTE_TYPE,
-        download_root=MODEL_DIR
+        download_root=MODEL_DIR,
+        vad_options=vad_options
     )
     print("[INIT] Model loaded successfully!", flush=True)
 
