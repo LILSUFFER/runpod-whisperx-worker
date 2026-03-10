@@ -34,5 +34,4 @@ jobs:
           push: true
           tags: |
             ghcr.io/lilsuffer/runpod-whisperx-worker:latest
-            ghcr.io/lilsuffer/runpod-whisperx-worker:v15
-
+            ghcr.io/lilsuffer/runpod-whisperx-worker:v16
