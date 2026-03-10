@@ -4,7 +4,7 @@ SHELL ["/bin/bash", "-c"]
 WORKDIR /
 
 RUN apt-get update && \
-    apt-get install -y ffmpeg && \
+    apt-get install -y ffmpeg libavformat-dev libavcodec-dev libavdevice-dev libavutil-dev libswscale-dev libswresample-dev libavfilter-dev pkg-config && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
