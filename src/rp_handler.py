@@ -1,0 +1,140 @@
+"""RunPod serverless handler for WhisperX transcription + alignment."""
+import runpod
+import whisperx
+import torch
+import gc
+import os
+import tempfile
+import urllib.request
+
+MODEL = None
+MODEL_DIR = "/models"
+DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+COMPUTE_TYPE = "float16" if torch.cuda.is_available() else "int8"
+
+def setup():
+    global MODEL
+    print(f"Loading WhisperX large-v3 on {DEVICE} ({COMPUTE_TYPE})...")
+    MODEL = whisperx.load_model(
+        "large-v3",
+        device=DEVICE,
+        compute_type=COMPUTE_TYPE,
+        download_root=MODEL_DIR
+    )
+    print("Model loaded.")
+
+def download_audio(url):
+    """Download audio from URL to temp file."""
+    suffix = ".wav" if ".wav" in url else ".mp3" if ".mp3" in url else ".mp4"
+    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
+    print(f"Downloading audio from {url}...")
+    
+    req = urllib.request.Request(url)
+    if "Authorization" in os.environ.get("AUDIO_AUTH_HEADER", ""):
+        req.add_header("Authorization", os.environ["AUDIO_AUTH_HEADER"])
+    
+    with urllib.request.urlopen(req, timeout=600) as resp:
+        while True:
+            chunk = resp.read(1024 * 1024)
+            if not chunk:
+                break
+            tmp.write(chunk)
+    tmp.close()
+    size_mb = os.path.getsize(tmp.name) / (1024 * 1024)
+    print(f"Downloaded {size_mb:.1f}MB to {tmp.name}")
+    return tmp.name
+
+def handler(job):
+    inp = job["input"]
+    audio_url = inp.get("audio", "")
+    audio_base64 = inp.get("audio_base64", "")
+    language = inp.get("language", "ru")
+    batch_size = inp.get("batch_size", 16)
+    align_words = inp.get("align", True)
+    
+    if not audio_url and not audio_base64:
+        return {"error": "No audio provided. Use 'audio' (URL) or 'audio_base64'."}
+    
+    tmp_path = None
+    try:
+        if audio_url:
+            tmp_path = download_audio(audio_url)
+        else:
+            import base64
+            tmp_path = tempfile.NamedTemporaryFile(delete=False, suffix=".wav").name
+            with open(tmp_path, "wb") as f:
+                f.write(base64.b64decode(audio_base64))
+        
+        audio = whisperx.load_audio(tmp_path)
+        
+        print(f"Transcribing ({language}, batch={batch_size})...")
+        result = MODEL.transcribe(audio, batch_size=batch_size, language=language, print_progress=True)
+        
+        detected_lang = result.get("language", language)
+        
+        if align_words:
+            print(f"Aligning words ({detected_lang})...")
+            try:
+                model_a, metadata = whisperx.load_align_model(
+                    language_code=detected_lang,
+                    device=DEVICE,
+                    model_dir=MODEL_DIR
+                )
+                result = whisperx.align(
+                    result["segments"],
+                    model_a,
+                    metadata,
+                    audio,
+                    DEVICE,
+                    return_char_alignments=False,
+                    print_progress=True
+                )
+                del model_a, metadata
+                gc.collect()
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+            except Exception as e:
+                print(f"Alignment failed: {e}, returning without word timestamps")
+        
+        segments = []
+        for seg in result.get("segments", []):
+            words = []
+            for w in seg.get("words", []):
+                words.append({
+                    "word": w.get("word", ""),
+                    "start": w.get("start"),
+                    "end": w.get("end"),
+                    "score": w.get("score")
+                })
+            segments.append({
+                "start": seg["start"],
+                "end": seg["end"],
+                "text": seg.get("text", ""),
+                "words": words
+            })
+        
+        word_segments = []
+        for ws in result.get("word_segments", []):
+            word_segments.append({
+                "word": ws.get("word", ""),
+                "start": ws.get("start"),
+                "end": ws.get("end"),
+                "score": ws.get("score")
+            })
+        
+        return {
+            "segments": segments,
+            "word_segments": word_segments,
+            "language": detected_lang
+        }
+    
+    except Exception as e:
+        import traceback
+        return {"error": str(e), "traceback": traceback.format_exc()}
+    
+    finally:
+        if tmp_path and os.path.exists(tmp_path):
+            os.unlink(tmp_path)
+
+setup()
+runpod.serverless.start({"handler": handler})
