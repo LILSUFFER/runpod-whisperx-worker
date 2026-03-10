@@ -92,7 +92,7 @@ def handler(job):
     audio_url = inp.get("audio", "")
     audio_base64 = inp.get("audio_base64", "")
     language = inp.get("language", "ru")
-    batch_size = inp.get("batch_size", 16)
+    batch_size = inp.get("batch_size", 32)
     align_words = inp.get("align", True)
 
     if not audio_url and not audio_base64:
