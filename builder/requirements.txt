@@ -5,3 +5,5 @@ torchaudio
 runpod
 whisperx
 requests
+matplotlib
+huggingface_hub
