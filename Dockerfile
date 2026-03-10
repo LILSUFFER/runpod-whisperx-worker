@@ -22,9 +22,6 @@ COPY builder/requirements.txt /requirements.txt
 RUN pip install -r /requirements.txt --no-cache-dir && \
     rm /requirements.txt
 
-COPY builder/fetch_models.py /fetch_models.py
-RUN python /fetch_models.py && rm /fetch_models.py
-
 COPY src /
 
 CMD ["python", "-u", "/rp_handler.py"]
