@@ -13,15 +13,6 @@ print(f'VAD model: {len(r.content)} bytes, SHA256: {h}'); \
 print(f'Expected:  0b5b3216d60a2d32fc086b47ea8c67589aaeb26b7e07fcbe620d6d0b83e209ea'); \
 print(f'Match: {h == \"0b5b3216d60a2d32fc086b47ea8c67589aaeb26b7e07fcbe620d6d0b83e209ea\"}')"
 
-RUN python -c "\
-import whisperx.vad, inspect; \
-fp = inspect.getfile(whisperx.vad); \
-f = open(fp); lines = f.readlines(); f.close(); \
-new = []; \
-for line in lines: \
-    if 'SHA256 checksum does not not match' in line: \
-        new.append(line.replace('raise RuntimeError', 'pass  # disabled: raise RuntimeError')); \
-    else: \
-        new.append(line); \
-f = open(fp, 'w'); f.writelines(new); f.close(); \
-print(f'Patched SHA256 check in {fp}')"
+RUN VADPY=$(python -c "import whisperx.vad, inspect; print(inspect.getfile(whisperx.vad))") && \
+    sed -i 's/raise RuntimeError("Model has been downloaded but the SHA256 checksum does not not match/pass  # SHA256 check disabled  # raise RuntimeError("Model has been downloaded but the SHA256 checksum does not not match/' "$VADPY" && \
+    echo "Patched SHA256 check in $VADPY"
