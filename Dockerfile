@@ -1,27 +1,39 @@
-FROM runpod/pytorch:2.4.0-py3.11-cuda12.4.1-devel-ubuntu22.04
+FROM nvidia/cuda:12.3.2-cudnn9-runtime-ubuntu22.04
 
-SHELL ["/bin/bash", "-c"]
-WORKDIR /
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+
+ENV PYTHONUNBUFFERED=1 \
+    DEBIAN_FRONTEND=noninteractive \
+    PIP_NO_CACHE_DIR=1
+
+WORKDIR /app
 
 RUN apt-get update && \
-    apt-get install -y ffmpeg && \
-    apt-get clean && \
+    apt-get install -y --no-install-recommends \
+        python3.10 \
+        python3.10-venv \
+        python3.10-dev \
+        ca-certificates \
+        curl \
+        git \
+    && apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
-COPY builder/requirements.txt /builder/requirements.txt
-RUN pip install --upgrade pip && \
-    pip install --no-cache-dir -r /builder/requirements.txt
+COPY --from=mwader/static-ffmpeg:7.1.1 /ffmpeg /ffprobe /usr/local/bin/
+RUN chmod +x /usr/local/bin/ffmpeg /usr/local/bin/ffprobe
+
+RUN python3.10 -m venv /app/venv
+ENV PATH="/app/venv/bin:$PATH"
+
+COPY builder/requirements.txt /app/requirements.txt
+RUN pip install --upgrade pip setuptools wheel && \
+    pip install --no-cache-dir -r /app/requirements.txt
 
 RUN python -c "\
 from huggingface_hub import snapshot_download; \
-snapshot_download('guillaumekln/faster-whisper-large-v2', local_dir='/models/faster-whisper-large-v2'); \
-print('Model downloaded successfully')"
+snapshot_download('Systran/faster-whisper-large-v2', local_dir='/models/Systran/faster-whisper-large-v2'); \
+print('faster-whisper-large-v2 downloaded')"
 
-RUN python -c "\
-from huggingface_hub import snapshot_download; \
-snapshot_download('jonatasgrosman/wav2vec2-large-xlsr-53-russian', local_dir='/models/wav2vec2-large-xlsr-53-russian'); \
-print('Alignment model downloaded successfully')"
+COPY src/rp_handler.py /app/rp_handler.py
 
-COPY src/rp_handler.py /rp_handler.py
-
-CMD ["python", "-u", "/rp_handler.py"]
+CMD ["python", "-u", "/app/rp_handler.py"]
