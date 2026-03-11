@@ -1,142 +1,205 @@
-"""RunPod serverless handler for faster-whisper transcription with word timestamps."""
-import sys
-print(f"[INIT] Python {sys.version}", flush=True)
-
-import gc
+#!/usr/bin/env python3
+import runpod
+import whisperx
+import torch
+import json
 import os
 import tempfile
-import traceback
-
-import torch
-print(f"[INIT] PyTorch {torch.__version__}", flush=True)
-
 import requests
-import runpod
-from faster_whisper import WhisperModel, BatchedInferencePipeline
-from faster_whisper.audio import decode_audio
-print("[INIT] faster-whisper imported successfully", flush=True)
+import base64
+import time
+import sys
 
-DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-COMPUTE_TYPE = "float16" if DEVICE == "cuda" else "int8"
-BATCH_SIZE = int(os.environ.get("BATCH_SIZE", "16"))
-MODEL_NAME = os.environ.get("WHISPER_MODEL", "Systran/faster-whisper-large-v2")
-MODEL_DIR = "/models"
+device = "cuda" if torch.cuda.is_available() else "cpu"
+compute_type = "float16" if device == "cuda" else "int8"
 
-print(f"[INIT] Device: {DEVICE}, compute: {COMPUTE_TYPE}, batch: {BATCH_SIZE}", flush=True)
-print(f"[INIT] Model: {MODEL_NAME}", flush=True)
+align_models = {}
 
-model = WhisperModel(
-    MODEL_NAME,
-    device=DEVICE,
-    compute_type=COMPUTE_TYPE,
-    download_root=MODEL_DIR,
-)
-batched_model = BatchedInferencePipeline(model)
-print("[INIT] Model loaded successfully!", flush=True)
+def get_align_model(language_code):
+    if language_code not in align_models:
+        sys.stderr.write(f"[whisperx] Loading alignment model for '{language_code}' on {device}...\n")
+        model, metadata = whisperx.load_align_model(language_code=language_code, device=device)
+        align_models[language_code] = (model, metadata)
+        sys.stderr.write(f"[whisperx] Alignment model for '{language_code}' loaded\n")
+    return align_models[language_code]
 
 
-def download_audio(url):
-    suffix = ".wav" if ".wav" in url else ".mp3" if ".mp3" in url else ".mp4"
-    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
-    print(f"Downloading audio from {url}...", flush=True)
-
-    headers = {}
-    auth_header = os.environ.get("AUDIO_AUTH_HEADER", "")
-    if auth_header:
-        headers["Authorization"] = auth_header
-
-    resp = requests.get(url, headers=headers, timeout=600, stream=True, allow_redirects=True)
+def download_audio(url, dest_path):
+    sys.stderr.write(f"[whisperx] Downloading audio from {url[:80]}...\n")
+    start = time.time()
+    resp = requests.get(url, timeout=300)
     resp.raise_for_status()
-    for chunk in resp.iter_content(chunk_size=1024 * 1024):
-        if chunk:
-            tmp.write(chunk)
-    tmp.close()
-    size_mb = os.path.getsize(tmp.name) / (1024 * 1024)
-    print(f"Downloaded {size_mb:.1f}MB to {tmp.name}", flush=True)
-    return tmp.name
+    with open(dest_path, "wb") as f:
+        f.write(resp.content)
+    elapsed = time.time() - start
+    size_mb = len(resp.content) / 1024 / 1024
+    sys.stderr.write(f"[whisperx] Downloaded {size_mb:.1f}MB in {elapsed:.1f}s\n")
 
 
 def handler(job):
-    inp = job["input"]
-    audio_url = inp.get("audio", "")
-    audio_base64 = inp.get("audio_base64", "")
-    language = inp.get("language", "ru")
-    batch_size = inp.get("batch_size", BATCH_SIZE)
+    job_input = job["input"]
 
-    if not audio_url and not audio_base64:
-        return {"error": "No audio provided. Use 'audio' (URL) or 'audio_base64'."}
+    mode = job_input.get("mode", "transcribe_align")
+    language = job_input.get("language", "ru")
+    audio_url = job_input.get("audio_url") or job_input.get("audio_file") or job_input.get("audio")
+    audio_base64 = job_input.get("audio_base64")
+    segments_input = job_input.get("segments")
+    model_size = job_input.get("model", "large-v2")
+    batch_size = job_input.get("batch_size", 16)
 
-    tmp_path = None
-    try:
-        if audio_url:
-            tmp_path = download_audio(audio_url)
-        else:
-            import base64
-            tmp_path = tempfile.NamedTemporaryFile(delete=False, suffix=".wav").name
-            with open(tmp_path, "wb") as f:
+    with tempfile.TemporaryDirectory() as tmpdir:
+        audio_path = os.path.join(tmpdir, "audio.mp3")
+
+        if audio_base64:
+            sys.stderr.write(f"[whisperx] Decoding base64 audio...\n")
+            with open(audio_path, "wb") as f:
                 f.write(base64.b64decode(audio_base64))
+        elif audio_url:
+            download_audio(audio_url, audio_path)
+        else:
+            return {"error": "No audio provided. Use 'audio_url', 'audio_file', or 'audio_base64'"}
 
-        audio = decode_audio(tmp_path)
+        audio = whisperx.load_audio(audio_path)
 
-        result_segments = None
-        for attempt_batch in [batch_size, max(batch_size // 2, 4), 2]:
-            try:
-                print(f"Transcribing ({language}, batch={attempt_batch})...", flush=True)
-                segments_iter, info = batched_model.transcribe(
-                    audio,
-                    batch_size=attempt_batch,
-                    language=language,
-                    word_timestamps=True,
-                    log_progress=True,
-                )
-                result_segments = list(segments_iter)
-                print(f"Transcription done: {len(result_segments)} segments, detected_lang={info.language}", flush=True)
-                break
-            except torch.cuda.OutOfMemoryError:
-                print(f"OOM with batch={attempt_batch}, trying smaller...", flush=True)
-                gc.collect()
-                torch.cuda.empty_cache()
-                continue
+        if mode == "align_only":
+            if not segments_input:
+                return {"error": "mode='align_only' requires 'segments' input"}
 
-        if result_segments is None:
-            return {"error": "Out of GPU memory even with batch_size=2"}
+            sys.stderr.write(f"[whisperx] Align-only mode: {len(segments_input)} segments, lang={language}\n")
+            align_model, metadata = get_align_model(language)
 
-        segments = []
-        word_segments = []
-        for seg in result_segments:
-            words = []
-            if seg.words:
-                for w in seg.words:
-                    word_obj = {
-                        "word": w.word,
-                        "start": w.start,
-                        "end": w.end,
-                        "score": getattr(w, "probability", None),
-                    }
-                    words.append(word_obj)
-                    word_segments.append(word_obj)
-            segments.append({
-                "start": seg.start,
-                "end": seg.end,
-                "text": seg.text,
-                "words": words,
-            })
+            start = time.time()
+            result = whisperx.align(
+                segments_input,
+                align_model,
+                metadata,
+                audio,
+                device,
+                return_char_alignments=False
+            )
+            elapsed = time.time() - start
 
-        return {
-            "segments": segments,
-            "word_segments": word_segments,
-            "language": info.language if info else language,
-        }
+            aligned, stats = format_segments(result)
+            sys.stderr.write(f"[whisperx] Alignment done in {elapsed:.1f}s: {len(aligned)} segments, {stats['total_words']} words ({stats['aligned_words']} aligned, {stats['unaligned_words']} unaligned)\n")
 
-    except Exception as e:
-        return {"error": str(e), "traceback": traceback.format_exc()}
+            return {
+                "segments": aligned,
+                "language": language,
+                "mode": "align_only",
+                "align_time": round(elapsed, 2),
+                "total_words": stats["total_words"],
+                "aligned_words": stats["aligned_words"],
+                "unaligned_words": stats["unaligned_words"],
+            }
 
-    finally:
-        if tmp_path and os.path.exists(tmp_path):
-            os.unlink(tmp_path)
-        gc.collect()
-        if torch.cuda.is_available():
+        else:
+            sys.stderr.write(f"[whisperx] Transcribe+Align mode: model={model_size}, lang={language}, batch={batch_size}\n")
+
+            sys.stderr.write(f"[whisperx] Loading whisper model '{model_size}'...\n")
+            model = whisperx.load_model(model_size, device, compute_type=compute_type, language=language)
+
+            sys.stderr.write(f"[whisperx] Transcribing...\n")
+            t0 = time.time()
+            result = model.transcribe(audio, batch_size=batch_size, language=language)
+            transcribe_time = time.time() - t0
+            sys.stderr.write(f"[whisperx] Transcription done in {transcribe_time:.1f}s: {len(result['segments'])} segments\n")
+
+            del model
             torch.cuda.empty_cache()
+
+            sys.stderr.write(f"[whisperx] Aligning...\n")
+            align_model, metadata = get_align_model(language)
+
+            t1 = time.time()
+            result = whisperx.align(
+                result["segments"],
+                align_model,
+                metadata,
+                audio,
+                device,
+                return_char_alignments=False
+            )
+            align_time = time.time() - t1
+            sys.stderr.write(f"[whisperx] Alignment done in {align_time:.1f}s\n")
+
+            aligned, stats = format_segments(result)
+            sys.stderr.write(f"[whisperx] Total: {len(aligned)} segments, {stats['total_words']} words ({stats['aligned_words']} aligned, {stats['unaligned_words']} unaligned)\n")
+
+            return {
+                "segments": aligned,
+                "language": result.get("language", language),
+                "mode": "transcribe_align",
+                "transcribe_time": round(transcribe_time, 2),
+                "align_time": round(align_time, 2),
+                "total_words": stats["total_words"],
+                "aligned_words": stats["aligned_words"],
+                "unaligned_words": stats["unaligned_words"],
+            }
+
+
+def format_segments(result):
+    aligned = []
+    total_words = 0
+    aligned_words = 0
+    unaligned_words = 0
+
+    for seg in result.get("segments", []):
+        words = []
+        seg_start = seg.get("start", 0)
+        seg_end = seg.get("end", 0)
+        raw_words = seg.get("words", [])
+
+        for w in raw_words:
+            has_start = "start" in w and w["start"] is not None
+            has_end = "end" in w and w["end"] is not None
+
+            if has_start and has_end:
+                words.append({
+                    "word": w.get("word", ""),
+                    "start": round(w["start"], 3),
+                    "end": round(w["end"], 3),
+                    "score": round(w.get("score", 0), 3)
+                })
+                aligned_words += 1
+            else:
+                words.append({
+                    "word": w.get("word", ""),
+                    "start": None,
+                    "end": None,
+                    "score": 0.0
+                })
+                unaligned_words += 1
+
+            total_words += 1
+
+        if not words and seg.get("text", "").strip():
+            text_words = seg["text"].strip().split()
+            if text_words:
+                duration = seg_end - seg_start
+                step = duration / len(text_words) if len(text_words) > 0 else duration
+                for i, tw in enumerate(text_words):
+                    words.append({
+                        "word": tw,
+                        "start": None,
+                        "end": None,
+                        "score": 0.0
+                    })
+                    unaligned_words += 1
+                    total_words += 1
+
+        aligned.append({
+            "start": round(seg_start, 3),
+            "end": round(seg_end, 3),
+            "text": seg.get("text", ""),
+            "words": words
+        })
+
+    stats = {
+        "total_words": total_words,
+        "aligned_words": aligned_words,
+        "unaligned_words": unaligned_words,
+    }
+    return aligned, stats
 
 
 runpod.serverless.start({"handler": handler})
