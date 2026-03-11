@@ -34,6 +34,11 @@ from huggingface_hub import snapshot_download; \
 snapshot_download('Systran/faster-whisper-large-v2', local_dir='/models/Systran/faster-whisper-large-v2'); \
 print('faster-whisper-large-v2 downloaded')"
 
-COPY src/rp_handler.py /app/rp_handler.py
+RUN python -c "\
+import whisperx; \
+model, metadata = whisperx.load_align_model(language_code='ru', device='cpu'); \
+print('WhisperX Russian alignment model downloaded')"
 
-CMD ["python", "-u", "/app/rp_handler.py"]
+COPY handler.py /app/handler.py
+
+CMD ["python", "-u", "/app/handler.py"]
