@@ -1,5 +1,7 @@
 runpod>=1.7.0
 faster-whisper>=1.1.0
+whisperx
 requests
 torch
+torchaudio
 huggingface_hub
